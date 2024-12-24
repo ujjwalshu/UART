@@ -1,0 +1,129 @@
+DESIGN CODE
+module uart_tx (
+    input  logic        clk,
+    input  logic        reset,
+    input  logic [7:0]  tx_data,
+    input  logic        tx_start,
+    output logic        tx,
+    output logic        tx_done
+);
+    typedef enum logic [1:0] {IDLE, START, DATA, STOP} state_t;
+    state_t state, next_state;
+
+    logic [7:0] shift_reg;
+    logic [3:0] bit_count;
+
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset) begin
+            state      <= IDLE;
+            shift_reg  <= 8'b0;
+            bit_count  <= 4'd0;
+            tx         <= 1'b1; // Idle state for UART
+        end else begin
+            state <= next_state;
+
+            if (state == START || state == DATA) begin
+                tx <= shift_reg[0];
+                shift_reg <= {1'b1, shift_reg[7:1]}; // Shift right
+            end else if (state == STOP) begin
+                tx <= 1'b1;
+            end
+
+            if (state == DATA)
+                bit_count <= bit_count + 1;
+            else
+                bit_count <= 4'd0;
+        end
+    end
+
+    always_comb begin
+        case (state)
+            IDLE:  next_state = (tx_start) ? START : IDLE;
+            START: next_state = DATA;
+            DATA:  next_state = (bit_count == 8) ? STOP : DATA;
+            STOP:  next_state = IDLE;
+            default: next_state = IDLE;
+        endcase
+    end
+
+    assign tx_done = (state == STOP);
+endmodule
+
+
+module uart_rx (
+    input  logic       clk,
+    input  logic       reset,
+    input  logic       rx,
+    output logic [7:0] rx_data,
+    output logic       rx_done
+);
+    typedef enum logic [1:0] {IDLE, START, DATA, STOP} state_t;
+    state_t state, next_state;
+
+    logic [7:0] shift_reg;
+    logic [3:0] bit_count;
+
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset) begin
+            state      <= IDLE;
+            shift_reg  <= 8'b0;
+            bit_count  <= 4'd0;
+        end else begin
+            state <= next_state;
+
+            if (state == DATA) begin
+                shift_reg <= {rx, shift_reg[7:1]}; // Shift left
+                bit_count <= bit_count + 1;
+            end else if (state == IDLE || state == STOP) begin
+                bit_count <= 4'd0;
+            end
+        end
+    end
+
+    always_comb begin
+        case (state)
+            IDLE:  next_state = (rx == 0) ? START : IDLE;
+            START: next_state = DATA;
+            DATA:  next_state = (bit_count == 8) ? STOP : DATA;
+            STOP:  next_state = IDLE;
+            default: next_state = IDLE;
+        endcase
+    end
+
+    assign rx_done = (state == STOP);
+    assign rx_data = shift_reg;
+endmodule
+
+
+TESTBENCH FOR SV
+module uart_tb;
+    logic        clk, reset, tx_start;
+    logic [7:0]  tx_data, rx_data;
+    logic        tx, rx, tx_done, rx_done;
+
+    // Instantiate UART transmitter and receiver
+    uart_tx transmitter (
+        .clk(clk), .reset(reset), .tx_data(tx_data),
+        .tx_start(tx_start), .tx(tx), .tx_done(tx_done)
+    );
+
+    uart_rx receiver (
+        .clk(clk), .reset(reset), .rx(tx), // Loopback connection
+        .rx_data(rx_data), .rx_done(rx_done)
+    );
+
+    // Clock generation
+    always #5 clk = ~clk;
+
+    // Test sequence
+    initial begin
+        clk = 0; reset = 1; tx_start = 0; tx_data = 8'h0;
+        #10 reset = 0;
+        #10 tx_data = 8'hA5; tx_start = 1; // Start transmission
+        #10 tx_start = 0;
+        wait (tx_done);
+        wait (rx_done);
+        $display("Transmitted: %h, Received: %h", tx_data, rx_data);
+        $stop;
+    end
+endmodule
