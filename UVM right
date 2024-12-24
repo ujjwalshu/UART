@@ -1,0 +1,116 @@
+TRANCTION class
+class uart_transaction extends uvm_sequence_item;
+    rand bit [7:0] data;    // 8-bit data
+    rand bit       parity;  // Parity bit (optional)
+
+    `uvm_object_utils_begin(uart_transaction)
+        `uvm_field_int(data, UVM_ALL_ON)
+        `uvm_field_int(parity, UVM_ALL_ON)
+    `uvm_object_utils_end
+
+    function new(string name = "uart_transaction");
+        super.new(name);
+    end
+endclass
+
+
+DRIVER
+class uart_driver extends uvm_driver #(uart_transaction);
+    virtual uart_if vif;  // Interface to connect to DUT
+
+    function new(string name = "uart_driver", uvm_component parent);
+        super.new(name, parent);
+    end
+
+    task run_phase(uvm_phase phase);
+        uart_transaction txn;
+        forever begin
+            seq_item_port.get_next_item(txn);  // Receive transaction from sequencer
+            vif.tx_data <= txn.data;
+            vif.tx_start <= 1;
+            @(posedge vif.clk);
+            vif.tx_start <= 0;
+            seq_item_port.item_done();  // Notify completion
+        end
+    end
+endclass
+
+MONITOR
+class uart_monitor extends uvm_monitor;
+    virtual uart_if vif;  // Interface to DUT
+    uvm_analysis_port #(uart_transaction) ap;
+
+    function new(string name = "uart_monitor", uvm_component parent);
+        super.new(name, parent);
+        ap = new("ap", this);
+    end
+
+    task run_phase(uvm_phase phase);
+        uart_transaction txn;
+        txn = uart_transaction::type_id::create("txn");
+        forever begin
+            @(posedge vif.rx_done);  // Wait for data reception
+            txn.data = vif.rx_data;
+            ap.write(txn);  // Send received data to the scoreboard
+        end
+    end
+endclass
+
+
+SCOREBOARD
+class uart_scoreboard extends uvm_component;
+    uvm_analysis_imp #(uart_transaction, uart_scoreboard) analysis_port;
+
+    queue #(bit [7:0]) transmitted_data;  // Store transmitted data
+    queue #(bit [7:0]) received_data;    // Store received data
+
+    function new(string name = "uart_scoreboard", uvm_component parent);
+        super.new(name, parent);
+    end
+
+    function void write(uart_transaction txn);
+        if (txn.data inside transmitted_data) begin
+            received_data.push_back(txn.data);
+        end else begin
+            `uvm_error("UART_Scoreboard", $sformatf("Data mismatch: %0h", txn.data));
+        end
+    end
+endclass
+
+
+ENVIRONMENT
+class uart_env extends uvm_env;
+    uart_agent agent;
+    uart_scoreboard scoreboard;
+
+    function new(string name = "uart_env", uvm_component parent);
+        super.new(name, parent);
+    end
+
+    function void build_phase(uvm_phase phase);
+        agent = uart_agent::type_id::create("agent", this);
+        scoreboard = uart_scoreboard::type_id::create("scoreboard", this);
+    end
+endclass
+
+
+TEST
+class uart_test extends uvm_test;
+    uart_env env;
+
+    function new(string name = "uart_test", uvm_component parent);
+        super.new(name, parent);
+    end
+
+    function void build_phase(uvm_phase phase);
+        env = uart_env::type_id::create("env", this);
+    end
+
+    task run_phase(uvm_phase phase);
+        uvm_sequence #(uart_transaction) seq;
+        seq = uart_sequence::type_id::create("seq");
+        phase.raise_objection(this);
+        seq.start(env.agent.sequencer);
+        phase.drop_objection(this);
+    end
+endclass
